@@ -1,0 +1,38 @@
+=== RTX 3070 Laptop (10de:249d) tensor A/B capture  20261031-015321 ===
+host=HOME-PC  scripts=C:\Users\User\Desktop\gpu-unlock\publish\scripts
+# LOCKED state: the card reverted to half-rate between captures because the GPU
+# idled (RTD3 power-down) with no keep-alive holding it -- same effect the unlock
+# fights. Captured at the same pinned 1500 MHz as the unlocked run.
+
+>>> pin SM clock to 1500 MHz
+GPU clocks set to "(gpuClkMin 1500, gpuClkMax 1500)" for GPU 00000000:01:00.0
+All done.
+
+>>> clock/power readback (pinned):
+clocks.current.sm [MHz], clocks.current.graphics [MHz], power.draw [W], temperature.gpu
+1560 MHz, 1560 MHz, 30.45 W, 53.69
+
+>>> tensor_bench.py  (raw mma.sync microbench, py -3)
+GPU: NVIDIA GeForce RTX 3070 Laptop GPU  cc=8.6  SMs=40  rated_clock=1560MHz (static, not live)
+warps=2560 iters/warp=2000000 time=691.5ms
+FP16 tensor (f32 accumulate): 30.3 TFLOPS
+
+Reference RTX 3070 Laptop (GA104, 40 SM) @ pinned 1500 MHz: ~28-29 locked, ~57 unlocked.
+  (Full boost ~1860 MHz: ~39 locked / ~73 unlocked.)
+VERDICT: LOCKED / reverted (half rate)
+  (valid only at a pinned/known SM clock -- nvidia-smi -lgc 1500,1500 first; a low number at a low clock is NOT 'locked')
+
+>>> torch_gemm.py  (PyTorch cuBLAS GEMM, via: ..\..\py313\python\python.exe)
+GPU: NVIDIA GeForce RTX 3070 Laptop GPU
+torch 2.6.0+cu124  CUDA 12.4  N=8192 (sustained)
+FP16  (FP32 acc):   30.0 TFLOPS
+BF16  (FP32 acc):   30.2 TFLOPS
+TF32           :   14.9 TFLOPS
+FP32  (control):   11.2 TFLOPS
+
+>>> clock readback (still pinned, after the benches):
+clocks.current.sm [MHz]
+1500 MHz
+
+>>> restore clocks
+All done.

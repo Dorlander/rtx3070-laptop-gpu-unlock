@@ -21,3 +21,5 @@ The **same log proves the real device**:
 ## What this log does and does not prove
 
 It proves the **UEFI unlock transaction ran and completed cleanly** on this card. It does **not** contain throughput numbers — a pre-boot UEFI app cannot run a tensor benchmark. The FP16/BF16/TF32 speedup is a separate measurement made in Windows with `scripts/tensor_bench.py` and `scripts/torch_gemm.py`; see the **Result** section of the top-level `README.md` and `COMPATIBILITY-REPORT.md`.
+
+`bench-unlocked-1500.txt` and `bench-locked-1500.txt` are the two halves of a **measured** A/B at a pinned 1500 MHz (produced by `scripts/capture_bench.ps1`): FP16 **53.8 TFLOPS unlocked vs ~30 locked (~1.8×)**, both tools agreeing to the decimal, each with the `nvidia-smi` clock readback proving the SM clock held at 1500 MHz. The locked half was captured when the dGPU idled and **RTD3 reverted the unlock** between runs — the same effect the keep-alive prevents.

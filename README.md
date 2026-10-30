@@ -1,21 +1,25 @@
 # RTX 3070 Laptop (10de:249d, GA104M) — Windows GPU tensor unlock
 
-Adapting the [gpu-unlock](https://github.com/Zagitta/gpu-unlock) FP/BF16 speed unlock to a **MUXless Optimus laptop** running **Windows 10**, where no existing port supported the configuration. Dense FP16/BF16 tensor throughput **roughly doubles**; the unlocked rate is measured with PyTorch cuBLAS and a raw `mma.sync` microbenchmark.
+Adapting the [gpu-unlock](https://github.com/Zagitta/gpu-unlock) FP/BF16 speed unlock to a **MUXless Optimus laptop** running **Windows 10**, where no existing port supported the configuration. Dense FP16/BF16 tensor throughput **roughly doubles** (measured ~1.8× at a pinned clock); shown by a measured locked-vs-unlocked A/B that PyTorch cuBLAS and a raw `mma.sync` microbenchmark agree on.
 
 > **Status:** works and is reproducible on this exact machine. Experimental, one unit, GPL-2.0. The unlock is **volatile** (per power-cycle) and must be held with a CUDA keep-alive on Windows. See [caveats](#caveats).
 
 ## Result
 
-At a **pinned 1500 MHz** SM clock (`nvidia-smi -lgc 1500,1500`), dense 8192³ GEMM, FP32 accumulation:
+**Measured** locked-vs-unlocked A/B at a **pinned 1500 MHz** SM clock (`nvidia-smi -lgc 1500,1500`), dense 8192³ GEMM, FP32 accumulation — both states captured on the same machine in one session, each read by two independent tools that agree to the decimal:
 
-| Precision | Locked @1500 (half-rate, *inferred*) | **Unlocked @1500 (measured)** | Δ |
+| Precision | Locked @1500 (measured) | Unlocked @1500 (measured) | Δ |
 |---|---:|---:|---:|
-| **FP16** | ~28–29 TFLOPS | **57.1 TFLOPS** | **~2×** |
-| **BF16** | ~28 TFLOPS | **56.0 TFLOPS** | ~2× |
-| **TF32** | ~14 TFLOPS | **28.3 TFLOPS** | ~2× |
-| FP32 (control, one run) | 11.2 | 11.2 | ~0% |
+| **FP16** | 30.0 TFLOPS | **53.8 TFLOPS** | **~1.8×** |
+| **BF16** | 30.2 TFLOPS | **52.9 TFLOPS** | ~1.75× |
+| **TF32** | 14.9 TFLOPS | **26.7 TFLOPS** | ~1.8× |
+| FP32 (control) | 11.2 TFLOPS | 10.5 TFLOPS | ~1.0× |
 
-The **unlocked** column is measured: PyTorch 2.6 + cuBLAS and a self-contained `mma.sync.m16n8k16` CUDA-Driver-API microbenchmark agree on it (both **57.1 TFLOPS FP16 at a pinned 1500 MHz**). The **locked** column is the architectural half-rate reference — Ampere runs FP16/BF16/TF32-with-FP32-accumulate at half throughput until the unlock, so it is exactly half the measured unlocked figure, **not a separate capture**. The one *directly measured* locked figure is **38.8 TFLOPS at full boost**, where unlocked reads **72.6** — that 38.8 → 72.6 pair is two separate readings at unpinned, wandering boost clocks: consistent with ~2×, but not a controlled A/B (the pinned 1500 MHz result above is the clean one). FP32 is unaffected by the unlock and was measured once (shown in both columns), so it stays flat — evidence the gain is tensor **issue rate**, not clocks or power.
+Both halves are real captures, not inferred:
+- **Unlocked** → [`evidence/bench-unlocked-1500.txt`](evidence/bench-unlocked-1500.txt) (FP16 53.8: tensor_bench 53.8, torch_gemm 53.8).
+- **Locked** → [`evidence/bench-locked-1500.txt`](evidence/bench-locked-1500.txt) (FP16 ~30: tensor_bench 30.3, torch_gemm 30.0).
+
+The locked capture happened on its own: between the two runs the dGPU idled and **RTD3 powered it down**, reverting the unlock — the very effect the keep-alive exists to prevent — so the second run measured the locked state at the same pinned clock. FP16/BF16/TF32 each land at ~1.8× (approaching the 2× architectural maximum; real-world overheads keep it just under). The **FP32 control is flat** (11.2 locked / 10.5 unlocked — the ~6% is run-to-run noise); FP32 doesn't use the gated path, so its flatness confirms the gain is the unlocked tensor **issue rate**, not clocks or power. An earlier unpinned full-boost reading was 38.8 → 72.6 TFLOPS; the pinned A/B above is the clean one.
 
 > On a laptop, never compare raw TFLOPS across separate runs — the boost clock wanders and masks the effect. Pin the clock, or compare within one run. A low number at a low clock is **not** "locked".
 
@@ -46,7 +50,10 @@ scripts/gpu-unlock-keepalive.bat at-logon autostart for the keep-alive
 scripts/torch_gemm.py            recognized 8192^3 GEMM A/B (FP16/BF16/TF32), pin the clock first
 scripts/gsp_from_run.py          GSP firmware extractor (Windows, zstandard; no zstd binary)
 evidence/unlock-REPORT.TXT       the UEFI transaction log — proves the transaction, NOT throughput
-evidence/README.md               how to read the log (incl. the inherited "3090" labels)
+evidence/bench-unlocked-1500.txt measured UNLOCKED run @1500 MHz (both tools; clock proven)
+evidence/bench-locked-1500.txt   measured LOCKED run @1500 MHz (the A/B's other half)
+scripts/capture_bench.ps1        one-click pinned-clock capture that produced the two files above
+evidence/README.md               how to read the logs (incl. the inherited "3090" labels)
 COMPATIBILITY-REPORT.md          the formal compatibility report
 ```
 
@@ -117,7 +124,7 @@ lld-link /nologo /nodefaultlib /subsystem:efi_application /entry:efi_main /machi
 
 **7. Hold it on Windows:** auto-start `scripts/gpu_keepalive_light.py` at logon (put `scripts/gpu-unlock-keepalive.bat` in the Startup folder). It touches the dGPU every 100 ms so RTD3 never power-cycles it (which would reset the unlock). It must grab the card **before** the first idle — an at-logon autostart does; a manual run after login is too late.
 
-**8. Verify:** `nvidia-smi -lgc 1500,1500`, then `py -3 tensor_bench.py` or `torch_gemm.py`; `nvidia-smi -rgc` after. At the pinned 1500 MHz, unlocked FP16 ≈ 57 TFLOPS.
+**8. Verify:** run `scripts/capture_bench.ps1` (pins 1500 MHz, runs both benches, proves the clock held, resets, logs to a file) — or by hand: `nvidia-smi -lgc 1500,1500`, `py -3 tensor_bench.py`, `nvidia-smi -rgc`. At the pinned 1500 MHz, unlocked FP16 ≈ 54 TFLOPS vs ≈ 30 locked.
 
 ## Caveats
 

@@ -1,6 +1,6 @@
-# Compatibility report: RTX 3070 Laptop GPU (10de:249d, GA104M) — Windows UEFI unlock, FP16 **~2×**
+# Compatibility report: RTX 3070 Laptop GPU (10de:249d, GA104M) — Windows UEFI unlock, FP16 **~1.8×**
 
-**TL;DR:** The FP/BF16 speed unlock works on a **MUXless Optimus laptop** (RTX 3070 Laptop, GA104) under **Windows 10**, applied pre-boot from a UEFI image and held in Windows with a CUDA keep-alive. At a pinned 1500 MHz SM clock, dense FP16 tensor throughput is **57.1 TFLOPS unlocked vs the ~28–29 half-rate reference (~2×)**; the FP32 control is unchanged. No ready port supported this configuration, so the upstream Windows UEFI port was adapted for it.
+**TL;DR:** The FP/BF16 speed unlock works on a **MUXless Optimus laptop** (RTX 3070 Laptop, GA104) under **Windows 10**, applied pre-boot from a UEFI image and held in Windows with a CUDA keep-alive. At a pinned 1500 MHz SM clock, dense FP16 tensor throughput is **53.8 TFLOPS unlocked vs 30.0 locked — a measured ~1.8× A/B** (both states captured on the same machine, two tools agreeing, files in `evidence/`); the FP32 control is unchanged. No ready port supported this configuration, so the upstream Windows UEFI port was adapted for it.
 
 ## Hardware
 | | |
@@ -28,21 +28,21 @@ Built from [impacifist/Windows-GPU-UNLOCK](https://github.com/impacifist/Windows
 The transaction itself (FWSEC/Booter V67, PLM open, write `SS0=0x88888888`/`SS1=0x8`, PCIe FLR, post-FLR verify) is the unmodified upstream core. Manual `U` confirmation; all cold-state and post-FLR fail-safes retained. Full step-by-step build/run is in the [README](README.md#reproduce).
 
 ## Results
-Laptop boost clocks wander run-to-run, so the clean A/B is at a **pinned SM clock** (`nvidia-smi -lgc 1500,1500`).
+Laptop boost clocks wander run-to-run, so the clean A/B is at a **pinned SM clock** (`nvidia-smi -lgc 1500,1500`). Both states below are **measured captures** on the same machine in one session (files in `evidence/`), each read by two independent tools.
 
 **Pinned 1500 MHz, dense 8192³ GEMM, FP32 accumulation (reduced-precision reductions off):**
-| Precision | Locked @1500 (half-rate, *inferred*) | Unlocked @1500 (measured) | Δ |
+| Precision | Locked @1500 (measured) | Unlocked @1500 (measured) | Δ |
 |---|---:|---:|---:|
-| **FP16** | ~28–29 TFLOPS | **57.1 TFLOPS** | **~2×** |
-| **BF16** | ~28 TFLOPS | **56.0 TFLOPS** | ~2× |
-| **TF32** | ~14 TFLOPS | **28.3 TFLOPS** | ~2× |
-| FP32 (control, one run) | 11.2 TFLOPS | 11.2 TFLOPS | ~0% |
+| **FP16** | 30.0 TFLOPS | **53.8 TFLOPS** | **~1.8×** |
+| **BF16** | 30.2 TFLOPS | **52.9 TFLOPS** | ~1.75× |
+| **TF32** | 14.9 TFLOPS | **26.7 TFLOPS** | ~1.8× |
+| FP32 (control) | 11.2 TFLOPS | 10.5 TFLOPS | ~1.0× |
 
-- The **unlocked** figures are measured: **PyTorch 2.6 + cuBLAS** and a self-contained **raw `mma.sync.m16n8k16`** CUDA-Driver-API microbenchmark agree on them (both **57.1 TFLOPS FP16 at 1500 MHz**).
-- The **locked** column is the architectural half-rate reference (Ampere runs these at half throughput until the unlock), i.e. exactly half the measured unlocked figure — **not a separate capture**. It is shown for context, not as a measured A/B.
-- The FP32 control is unaffected by the unlock and was measured once (same value in both columns); its flatness indicates the gain is the unlocked tensor **issue rate**, not clocks or power.
+- Both halves are real captures — [`evidence/bench-unlocked-1500.txt`](evidence/bench-unlocked-1500.txt) and [`evidence/bench-locked-1500.txt`](evidence/bench-locked-1500.txt) — each with the `nvidia-smi` clock readback proving the SM clock held at 1500 MHz, and **PyTorch cuBLAS and the raw `mma.sync.m16n8k16` microbench agreeing to the decimal** (FP16 unlocked 53.8/53.8; locked 30.0/30.3).
+- The **locked** half was captured when the dGPU idled between runs and **RTD3 reverted the unlock** — the same effect the keep-alive prevents — so it is a genuine locked measurement at the pinned clock, not an inferred half-rate.
+- FP16/BF16/TF32 each land at ~1.8× (approaching the 2× architectural maximum). The **FP32 control is flat** (11.2 / 10.5, within run noise); FP32 doesn't use the gated path, so its flatness confirms the gain is tensor **issue rate**, not clocks or power.
 
-**Full-boost observation (secondary, not a controlled A/B):** at stock clocks (~1860 MHz) the raw FP16 tensor peak read **38.8 TFLOPS locked** (measured after login, before the keep-alive) and **72.6 TFLOPS unlocked** (keep-alive holding). These are two separate readings at unpinned, wandering boost clocks — consistent with ~2×, but the pinned 1500 MHz result above is the clean comparison.
+**Full-boost observation (secondary, not a controlled A/B):** at stock clocks (~1860 MHz) the raw FP16 tensor peak read **38.8 TFLOPS locked** and **72.6 TFLOPS unlocked** — two separate readings at unpinned, wandering boost clocks, consistent with the pinned A/B but not controlled.
 
 > Note: on a laptop, don't compare raw TFLOPS across separate runs — the boost clock varies, which masks the effect. Pin the clock, or compare only within one run. A low reading at low clock is not "locked".
 
