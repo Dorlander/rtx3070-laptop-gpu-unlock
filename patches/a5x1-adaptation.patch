@@ -1,0 +1,308 @@
+diff --git a/internal-boot/boot/handoff.c b/internal-boot/boot/handoff.c
+index a60c30c..2e8912b 100644
+--- a/internal-boot/boot/handoff.c
++++ b/internal-boot/boot/handoff.c
+@@ -145,7 +145,7 @@ static EFI_STATUS OpenLog(VOID) {
+     CHAR16 name[]=L"\\RTX3090-UNLOCK\\PREP00.TXT";
+ #endif
+ #elif defined(GU_DIAGNOSTIC_ONLY)
+-    CHAR16 name[]=L"\\RTX3090-UNLOCK\\DIAG00.TXT";
++    CHAR16 name[]=L"\\GPUDIAG00.TXT";
+ #else
+     CHAR16 name[]=L"\\RTX3090-UNLOCK\\HANDOFF00.TXT";
+ #endif
+@@ -223,6 +223,12 @@ static EFI_STATUS LoadUnlock(VOID) {
+ #endif
+ static EFI_STATUS Prepare(VOID *Context) {
+   (void)Context;EFI_HANDLE own=NULL,windows=NULL;
++#ifdef GU_PROBE_GENERIC
++  /* Read-only probe: write the capture to the boot volume (USB) root. No USB-node
++     requirement (firmware USB device paths vary) and no Windows ESP dependency,
++     so it runs on this laptop and returns to the firmware BootOrder afterwards. */
++  { EFI_STATUS sp=OpenLog(); if(sp!=EFI_SUCCESS)return sp; return Record(NULL,"probe-generic-v1",EFI_SUCCESS); }
++#endif
+ #if defined(GU_USB_PROBE) || defined(GU_USB_MEDIA)
+   /* Probe or unlock from an MBR USB stick: no partition GUID to pin, so the log/child
+      volume is the device this image was loaded from, and it must be USB. */
+@@ -418,9 +424,18 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
+     /* Partial observations never authorize unlock. Normal Windows boot is
+      * permitted because this separate image has not touched GPU state. */
+     EFI_STATUS recorded=Record(NULL,"diagnostic-result",s);
++#ifdef GU_PROBE_GENERIC
++    if(recorded!=EFI_SUCCESS)s=recorded;
++    Say(s==EFI_SUCCESS?L"Done. On the USB ROOT: GPUDIAG00.TXT (and PROM.BIN, IMG*.BIN).\r\n":L"Capture had errors; send GPUDIAG00.TXT from the USB if present.\r\n");
++#else
+     if(recorded==EFI_SUCCESS)s=Windows(NULL);
+     else s=recorded;
++#endif
+   }
++#ifdef GU_PROBE_GENERIC
++  else Say(L"Could not write to the USB. Is it FAT32 and not write-protected?\r\n");
++  if(Table->BootServices->Stall)Table->BootServices->Stall(8000000);
++#endif
+ #else
+   GU_HANDOFF_OPS ops={NULL,Prepare,Select,Record,Unlock,Windows};
+   s=GuHandoffFlow(&ops);
+diff --git a/internal-boot/boot/probe.c b/internal-boot/boot/probe.c
+index 1cc9a30..66c1433 100644
+--- a/internal-boot/boot/probe.c
++++ b/internal-boot/boot/probe.c
+@@ -68,7 +68,7 @@ static EFI_GUID PathGuidL=EFI_DEVICE_PATH_PROTOCOL_GUID;
+ static EFI_GUID GopGuidL=EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+ static EFI_SYSTEM_TABLE *SysT;
+ static UINTN DumpIndex;
+-static CHAR16 ImgPrefix[]=L"\\RTX3090-UNLOCK\\IMG";
++static CHAR16 ImgPrefix[]=L"\\IMG";
+ 
+ #ifdef GU_PROBE_PRESERVE_CAPTURE
+ /* No CREATE flag until absence was confirmed. Never replace an earlier capture.
+@@ -148,10 +148,10 @@ static VOID ProbeCaps(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io) {
+ #if defined(GU_PROBE_GENERIC) || defined(GU_PROBE_DUMP_PROM)
+ static VOID DumpProm(CAPTURE *c,EFI_FILE_PROTOCOL *root,UINT8 *page) {
+ #ifdef GU_PROBE_PRESERVE_CAPTURE
+-  if(!NewDump(c,root,L"\\RTX3090-UNLOCK\\PROM.BIN"))return;
++  if(!NewDump(c,root,L"\\PROM.BIN"))return;
+ #endif
+   EFI_FILE_PROTOCOL *f=NULL;
+-  EFI_STATUS s=root->Open(root,&f,L"\\RTX3090-UNLOCK\\PROM.BIN",EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE,0);
++  EFI_STATUS s=root->Open(root,&f,L"\\PROM.BIN",EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE,0);
+   if(s!=EFI_SUCCESS||!f){Problem(c,"prom-open",s);return;}
+   if(!f->Write || !f->Close){Problem(c,"prom-file-methods",EFI_UNSUPPORTED);return;}
+   UINTN n=0x100000;s=f->Write(f,&n,page);
+@@ -171,7 +171,8 @@ static VOID DumpProm(CAPTURE *c,EFI_FILE_PROTOCOL *root,UINT8 *page) {
+ static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cfg) {
+ #ifdef GU_PROBE_GENERIC
+   BOOLEAN identity=cfg[0]==0x220410deU || cfg[0]==0x220310deU ||
+-    cfg[0]==0x248710deU || cfg[0]==0x250410deU || cfg[0]==0x248410deU || cfg[0]==0x24c910deU || cfg[0]==0x220a10deU;
++    cfg[0]==0x248710deU || cfg[0]==0x250410deU || cfg[0]==0x248410deU || cfg[0]==0x24c910deU || cfg[0]==0x220a10deU ||
++    cfg[0]==0x249d10deU;
+ #else
+   BOOLEAN identity=cfg[0]==GU_BOARD_ID && cfg[11]==GU_BOARD_SUBSYSTEM;
+ #ifdef GU_BAR0_BASE
+@@ -179,7 +180,10 @@ static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cf
+ #endif
+ #endif
+   if(!identity || cfg[2]!=0x030000a1U ||
+-     (cfg[1]&6U)!=2U || !cfg[4] || (cfg[4]&0xffffffU) || !io->GetBarAttributes || !io->Mem.Read)return FALSE;
++#ifndef GU_PROBE_ENABLE_MEMORY
++     (cfg[1]&6U)!=2U ||
++#endif
++     !cfg[4] || (cfg[4]&0xffffffU) || !io->GetBarAttributes || !io->Mem.Read)return FALSE;
+   VOID *raw=NULL;
+   EFI_FREE_POOL release=c->Table->BootServices->FreePool;
+   if(!release)return FALSE;
+@@ -241,9 +245,38 @@ static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar,EFI_FILE_PROT
+    * any release instead of stopping mid-release. A protocol call, so it precedes the recheck. */
+   UINT64 pciAttributes=0;
+   EFI_STATUS attributesStatus=io->Attributes?io->Attributes(io,EfiPciIoAttributeOperationGet,0,&pciAttributes):EFI_UNSUPPORTED;
++#ifdef GU_PROBE_ENABLE_MEMORY
++  /* MUXless hybrid: PCI COMMAND often reads 0x0000 pre-OS (memory decode OFF),
++   * so BAR0 MMIO/PROM cannot be read without first REVERSIBLY enabling memory.
++   * Save COMMAND, enable MEM|BME via PciIo->Attributes(Enable), read; the
++   * firmware's restore step (and ownership backoff) returns COMMAND to zero.
++   * Nothing in device memory is written. */
++  UINT16 savedCommand=0; EFI_STATUS savedCmdStatus=EFI_UNSUPPORTED;
++  if(io->Pci.Read) savedCmdStatus=io->Pci.Read(io,EfiPciIoWidthUint16,0x04,1,&savedCommand);
++  UINT64 enableAttr=EFI_PCI_IO_ATTRIBUTE_MEMORY|EFI_PCI_IO_ATTRIBUTE_BUS_MASTER;
++  EFI_STATUS enableStatus=io->Attributes?io->Attributes(io,EfiPciIoAttributeOperationEnable,enableAttr,NULL):EFI_UNSUPPORTED;
++  UINT16 afterEnableCommand=0; EFI_STATUS afterEnableStatus=EFI_UNSUPPORTED;
++  if(io->Pci.Read) afterEnableStatus=io->Pci.Read(io,EfiPciIoWidthUint16,0x04,1,&afterEnableCommand);
++  /* Re-sample cfg so ProbeUnchanged sees the new COMMAND we just set, not the
++   * zero captured earlier. Only the first word (COMMAND/STATUS) legitimately
++   * changed; everything else must still match. */
++  UINT32 cfgLive[64];
++  if(io->Pci.Read && io->Pci.Read(io,EfiPciIoWidthUint32,0,64,cfgLive)==EFI_SUCCESS) {
++    UINT32 *mcfg=(UINT32 *)(UINTN)cfg;
++    mcfg[1]=cfgLive[1];
++  }
++#endif
+   if(!GuProbePinSame(c,&pin) || !ProbeUnchanged(c,handle,io,cfg,expectedSegment,expectedBus) || !GuProbePinSame(c,&pin)) {
++#ifdef GU_PROBE_ENABLE_MEMORY
++    if(io->Attributes){UINT64 restore=enableAttr; (VOID)io->Attributes(io,EfiPciIoAttributeOperationDisable,restore,NULL);}
++#endif
+     pin.Free(page);Problem(c,"probe-identity-changed",EFI_NOT_READY);return;
+   }
++#ifdef GU_PROBE_ENABLE_MEMORY
++  Text(c,"probe-enable savedCmd=0x");Hex(c,savedCommand,4);Text(c," savedStatus=0x");Hex(c,savedCmdStatus,16);
++  Text(c," enableStatus=0x");Hex(c,enableStatus,16);
++  Text(c," afterCmd=0x");Hex(c,afterEnableCommand,4);Text(c," afterStatus=0x");Hex(c,afterEnableStatus,16);End(c);
++#endif
+ #else
+   (void)handle;(void)cfg;(void)expectedSegment;(void)expectedBus;
+ #endif
+@@ -302,6 +335,18 @@ static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar,EFI_FILE_PROT
+     if(c->Table->BootServices->FreePool(page)!=EFI_SUCCESS)Problem(c,"prom-free",EFI_DEVICE_ERROR);
+ #endif
+   } else Problem(c,"prom-alloc",s==EFI_SUCCESS?EFI_OUT_OF_RESOURCES:s);
++#ifdef GU_PROBE_ENABLE_MEMORY
++  /* Reversibly return COMMAND to the enable-state it had before our Enable call.
++   * Disable(MEM|BME) is a no-op on bits that were already clear, so when the
++   * firmware's pre-OS state was COMMAND=0, this leaves COMMAND=0 again. */
++  if(io->Attributes){
++    EFI_STATUS disableStatus=io->Attributes(io,EfiPciIoAttributeOperationDisable,EFI_PCI_IO_ATTRIBUTE_MEMORY|EFI_PCI_IO_ATTRIBUTE_BUS_MASTER,NULL);
++    UINT16 restoredCommand=0xffff; EFI_STATUS restoredStatus=EFI_UNSUPPORTED;
++    if(io->Pci.Read) restoredStatus=io->Pci.Read(io,EfiPciIoWidthUint16,0x04,1,&restoredCommand);
++    Text(c,"probe-restore disableStatus=0x");Hex(c,disableStatus,16);
++    Text(c," restoredCmd=0x");Hex(c,restoredCommand,4);Text(c," restoredStatus=0x");Hex(c,restoredStatus,16);End(c);
++  }
++#endif
+ }
+ 
+ static VOID ProbeDrivers(CAPTURE *c,EFI_FILE_PROTOCOL *root) {
+diff --git a/internal-boot/unlock/app.c b/internal-boot/unlock/app.c
+index aef52c2..bbb6461 100644
+--- a/internal-boot/unlock/app.c
++++ b/internal-boot/unlock/app.c
+@@ -88,7 +88,48 @@ static BOOLEAN AmdGopParent(EFI_DEVICE_PATH_PROTOCOL *Path) {
+ }
+ #endif
+ static BOOLEAN DisplayCheck(VOID) {
+-#ifdef GU_HEADLESS_RESEARCH
++#if defined(GU_A5X1_NO_DISPLAY)
++  /* MUXless Optimus: the Radeon iGPU owns the console; the dGPU drives no
++   * display. Confirm no GOP is the dGPU or a child of it, so the dGPU's FLR
++   * cannot disturb the visible console. Compare each GOP's device path against
++   * the dGPU's own path prefix (bounded walks, no out-of-bounds reads). */
++  EFI_DEVICE_PATH_PROTOCOL *target=NULL;
++  if(!Gu.handle || EFI_ERROR(Gu.bs->HandleProtocol(Gu.handle,&PathGuid,(VOID **)&target)) || !target)return FALSE;
++  UINTN tbytes=0;
++  for(EFI_DEVICE_PATH_PROTOCOL *p=target;;) {
++    UINTN len=p->Length[0]|((UINTN)p->Length[1]<<8);
++    if(len<4 || tbytes>4096)return FALSE;
++    tbytes+=len;
++    if(p->Type==END_DEVICE_PATH_TYPE)break;
++    p=(VOID *)((UINT8 *)p+len);
++  }
++  if(tbytes<=4)return FALSE;
++  UINTN prefix=tbytes-4;
++  EFI_HANDLE *handles=NULL;UINTN count=0;
++  EFI_STATUS status=Gu.bs->LocateHandleBuffer(ByProtocol,&GopGuid,NULL,&count,&handles);
++  if(status==EFI_NOT_FOUND){GuLog("A5X1 no-display: no GOP present; dGPU drives nothing\n");return GuLogReady();}
++  if(EFI_ERROR(status) || !handles || !count || count>32){if(handles)GuFree(handles);return FALSE;}
++  BOOLEAN dgpu_display=FALSE;
++  for(UINTN i=0;i<count;i++) {
++    EFI_DEVICE_PATH_PROTOCOL *gp=NULL;
++    if(EFI_ERROR(Gu.bs->HandleProtocol(handles[i],&PathGuid,(VOID **)&gp)) || !gp)continue;
++    UINTN gbytes=0;BOOLEAN ok=FALSE;
++    for(EFI_DEVICE_PATH_PROTOCOL *q=gp;;) {
++      UINTN len=q->Length[0]|((UINTN)q->Length[1]<<8);
++      if(len<4 || gbytes>4096){gbytes=0;break;}
++      gbytes+=len;
++      if(q->Type==END_DEVICE_PATH_TYPE){ok=TRUE;break;}
++      q=(VOID *)((UINT8 *)q+len);
++    }
++    if(!ok || gbytes<prefix)continue;
++    const UINT8 *a=(const UINT8 *)target,*b=(const UINT8 *)gp;BOOLEAN same=TRUE;
++    for(UINTN k=0;k<prefix;k++)if(a[k]!=b[k]){same=FALSE;break;}
++    if(same){dgpu_display=TRUE;GuLog("A5X1: GOP %u routes through the dGPU; refusing\n",(unsigned)i);break;}
++  }
++  GuFree(handles);
++  GuLog("A5X1 no-display check: gops=%zu dgpu_drives_display=%u\n",(size_t)count,(unsigned)dgpu_display);
++  return !dgpu_display && GuLogReady();
++#elif defined(GU_HEADLESS_RESEARCH)
+   return GuHeadlessCheck() && GuLogReady();
+ #else
+   EFI_HANDLE *handles=NULL;UINTN count=0,intel=0;BOOLEAN valid=TRUE;
+@@ -233,6 +274,21 @@ static EFI_STATUS FindTarget(VOID) {
+   }
+   GuFree(handles);GuLog("PCI target matches=%zu status=%#llx\n",(size_t)found,(unsigned long long)status);
+   if(EFI_ERROR(status) || found!=1)return EFI_UNSUPPORTED;
++#ifdef GU_A5X1_NO_DISPLAY
++  /* MUXless pre-OS: the dGPU boots with PCI COMMAND=0 (memory decode off), so
++   * GuCheckConfig's required MEM-on state and every BAR0/PROM read below would
++   * fail. Reversibly enable ONLY memory space (not bus master). The saved
++   * config then carries MEM on, and GuRestorePci restores this exact command
++   * across the FLR. BME stays off until the transaction enables it. */
++  if(Gu.pci && Gu.pci->Attributes) {
++    UINT64 supported=0;
++    EFI_STATUS sup=Gu.pci->Attributes(Gu.pci,EfiPciIoAttributeOperationSupported,0,&supported);
++    if(!EFI_ERROR(sup) && (supported&EFI_PCI_IO_ATTRIBUTE_MEMORY)) {
++      EFI_STATUS en=Gu.pci->Attributes(Gu.pci,EfiPciIoAttributeOperationEnable,EFI_PCI_IO_ATTRIBUTE_MEMORY,NULL);
++      GuLog("A5X1 enable memory decode: supported=%#llx status=%#llx\n",(unsigned long long)supported,(unsigned long long)en);
++    } else GuLog("A5X1 memory decode not enabled: supported_status=%#llx mask=%#llx\n",(unsigned long long)sup,(unsigned long long)supported);
++  }
++#endif
+   return ConfigCheck(TRUE);
+ }
+ static EFI_STATUS BarCheck(VOID) {
+diff --git a/internal-boot/unlock/app_io.c b/internal-boot/unlock/app_io.c
+index a079ac5..97f2214 100644
+--- a/internal-boot/unlock/app_io.c
++++ b/internal-boot/unlock/app_io.c
+@@ -59,7 +59,12 @@ BOOLEAN GuLogReady(VOID){return Report && !LogFault;}
+ static BOOLEAN UsbPath(EFI_HANDLE Handle) {
+   EFI_DEVICE_PATH_PROTOCOL *path=NULL;
+   if(EFI_ERROR(Table->BootServices->HandleProtocol(Handle,&PathGuid,(VOID **)&path)) || !path)return FALSE;
+-#if defined(GU_AUTOMATIC_BOOT) && !defined(GU_USB_MEDIA)
++#if defined(GU_A5X1_NO_DISPLAY)
++  /* Firmware USB boot paths vary on this laptop (the read-only probe needed the
++   * same relaxation). Assets are only read from, and the log only written to,
++   * this same boot volume, so accept it without requiring a USB messaging node. */
++  return TRUE;
++#elif defined(GU_AUTOMATIC_BOOT) && !defined(GU_USB_MEDIA)
+   return GuPathIsPartition(path,&GuInternalPartition);
+ #elif defined(GU_INTERNAL_BOOT) && !defined(GU_USB_MEDIA)
+   return GuAllowedMediaPath(path,TRUE);
+diff --git a/internal-boot/unlock/gpu-family.h b/internal-boot/unlock/gpu-family.h
+index 038c582..925f6bd 100644
+--- a/internal-boot/unlock/gpu-family.h
++++ b/internal-boot/unlock/gpu-family.h
+@@ -43,7 +43,7 @@
+ #define GU_FAMILY_CHIP_ID 0xb74000a1U
+ /* These reviewed SKUs do not form a free identity/memory cross product.
+  * LOCAL driver admission remains PCI-specific in proven.json. */
+-#if !(((GU_BOARD_ID == 0x248210deU || GU_BOARD_ID == 0x248410deU || GU_BOARD_ID == 0x24c910deU) && GU_DEVICE_MEMORY_SIZE == 0x2000U) || (GU_BOARD_ID == 0x248710deU && GU_DEVICE_MEMORY_SIZE == 0x3000U))
++#if !(((GU_BOARD_ID == 0x248210deU || GU_BOARD_ID == 0x248410deU || GU_BOARD_ID == 0x24c910deU || GU_BOARD_ID == 0x249d10deU) && GU_DEVICE_MEMORY_SIZE == 0x2000U) || (GU_BOARD_ID == 0x248710deU && GU_DEVICE_MEMORY_SIZE == 0x3000U))
+ #error Card identity or memory is outside the reviewed GA104 family combinations
+ #endif
+ #elif GU_GPU_FAMILY == GU_GPU_FAMILY_GA106
+diff --git a/internal-boot/unlock/machine-profile.h b/internal-boot/unlock/machine-profile.h
+index 23e209b..511853c 100644
+--- a/internal-boot/unlock/machine-profile.h
++++ b/internal-boot/unlock/machine-profile.h
+@@ -18,10 +18,10 @@
+ #error GPU family and firmware must be derived from the selected machine profile
+ #endif
+ 
+-#if (defined(GU_PROFILE_B650M_3090FE) + defined(GU_PROFILE_B660M_3070TI) + defined(GU_PROFILE_B660M_3090TI) + defined(GU_PROFILE_X870_3090TI) + defined(GU_PROFILE_B660PLUS_3060) + defined(GU_PROFILE_LOCAL) + defined(GU_PROFILE_H610M_3060) + defined(GU_PROFILE_PROBE_H610M_3060)) > 1
++#if (defined(GU_PROFILE_B650M_3090FE) + defined(GU_PROFILE_B660M_3070TI) + defined(GU_PROFILE_B660M_3090TI) + defined(GU_PROFILE_X870_3090TI) + defined(GU_PROFILE_B660PLUS_3060) + defined(GU_PROFILE_LOCAL) + defined(GU_PROFILE_H610M_3060) + defined(GU_PROFILE_PROBE_H610M_3060) + defined(GU_PROFILE_A5X1_3070M)) > 1
+ #error Select exactly one machine profile
+ #endif
+-#if !defined(GU_PROFILE_B650M_3090FE) && !defined(GU_PROFILE_B660M_3070TI) && !defined(GU_PROFILE_B660M_3090TI) && !defined(GU_PROFILE_X870_3090TI) && !defined(GU_PROFILE_B660PLUS_3060) && !defined(GU_PROFILE_LOCAL) && !defined(GU_PROFILE_H610M_3060) && !defined(GU_PROFILE_PROBE_H610M_3060)
++#if !defined(GU_PROFILE_B650M_3090FE) && !defined(GU_PROFILE_B660M_3070TI) && !defined(GU_PROFILE_B660M_3090TI) && !defined(GU_PROFILE_X870_3090TI) && !defined(GU_PROFILE_B660PLUS_3060) && !defined(GU_PROFILE_LOCAL) && !defined(GU_PROFILE_H610M_3060) && !defined(GU_PROFILE_PROBE_H610M_3060) && !defined(GU_PROFILE_A5X1_3070M)
+ #define GU_PROFILE_B650M_3090FE 1
+ #endif
+ 
+@@ -168,6 +168,32 @@
+   2,1,12,0,0xd0,0x41,3,10,0,0,0,0,1,1,6,0,0,1,1,1,6,0,0,0,2,3,8,0,32,3,1,128,127,255,4,0
+ #define GU_FIRMWARE_PROFILE GU_FIRMWARE_AMI_B660M_4003
+ 
++#elif defined(GU_PROFILE_A5X1_3070M)
++
++/* GIGABYTE A5 X1 (Clevo board, INSYDE BIOS 1.07.FB08), Ryzen 9 5900HX + Radeon
++ * iGPU driving the only display (MUXless Optimus), RTX 3070 Laptop GPU
++ * (GA104, 10de:249d, subsystem 1558:50f2). Constants from this machine's own
++ * read-only probe capture (GPUDIAG00.TXT / PROM.BIN, 2026-10-30). UNREVIEWED.
++ * The dGPU drives NO display: GU_A5X1_NO_DISPLAY relaxes DisplayCheck, and the
++ * pre-OS COMMAND=0 state means memory must be reversibly enabled before the
++ * config check (handled in app.c FindTarget under GU_A5X1_NO_DISPLAY). */
++#define GU_PROFILE_NAME "GIGABYTE-A5-X1-RC45AX-RTX3070-LAPTOP"
++#define GU_A5X1_NO_DISPLAY 1
++#define GU_BOARD_ID 0x249d10deU
++#define GU_BOARD_SUBSYSTEM 0x50f21558U
++#define GU_BAR0_BASE 0xd0000000ULL
++#define GU_BAR0_END 0xd0ffffffULL
++#define GU_DEVICE_MEMORY_SIZE 0x2000U
++#define GU_GPU_FAMILY GU_GPU_FAMILY_GA104
++#define GU_PROM_SHA256 "fe71adc30985bb72015038841a4fa1ea462967ebf22006625bbfd4fb045c78e2"
++#define GU_ROOT_PORT_DEVICE 1U
++#define GU_ROOT_PORT_FUNCTION 0U
++/* Placeholder only: the dGPU drives no display, so GuDisplayPath is never
++ * consulted for this profile. Kept so shared code that references it compiles. */
++#define GU_RTX_PATH_BYTES \
++  2,1,12,0,0xd0,0x41,3,10,0,0,0,0,1,1,6,0,0,1,1,1,6,0,0,0,2,3,8,0,32,3,1,128,127,255,4,0
++#define GU_FIRMWARE_PROFILE GU_FIRMWARE_AMI_B660M_4003
++
+ #elif defined(GU_PROFILE_B660M_3090TI)
+ 
+ /* ASUSTeK TUF GAMING B660M-E D4 BIOS 4003, i7-12700F (no iGPU),
