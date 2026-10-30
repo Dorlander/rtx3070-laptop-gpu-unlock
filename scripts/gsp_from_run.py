@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Extract GSP firmware (gsp_ga10x.bin) + NVIDIA LICENSE from the 610.43.03
 # .run installer on Windows, using the Python `zstandard` module instead of a
-# zstd binary. Run with: py -3.14 -P gsp_from_run.py <run> <outdir>
+# zstd binary. Run with: py -3 -P gsp_from_run.py <run> <outdir>
 import sys, re, tarfile
 from pathlib import Path
 import zstandard
