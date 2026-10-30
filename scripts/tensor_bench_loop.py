@@ -2,7 +2,8 @@
 # Keep-alive + monitor: holds ONE CUDA context (keeps the dGPU awake, defeating
 # RTD3 power-down) and re-measures FP16 tensor TFLOPS every ~2 s, printing a line
 # each time. Run it the INSTANT Windows reaches the desktop after a USB unlock
-# boot. If the unlock survived, you'll see ~60-70; if Windows reset it, ~38.
+# boot. If the unlock survived you'll see the unlocked rate (~57-73, scales with
+# the SM clock); if Windows reset it, ~28-39. Pin 1500 MHz for a stable compare.
 # Ctrl+C to stop.  Works on Python 3.14 (CUDA Driver API via nvcuda.dll).
 import ctypes as C, time
 
@@ -60,7 +61,7 @@ def run(it):
     ms=C.c_float(); cuda.cuEventElapsedTime(C.byref(ms),start,stop); return ms.value/1000.0
 run(1000)
 print(f"SMs={sm.value}  warps={WARPS}. Monitoring FP16 tensor rate (Ctrl+C to stop)...")
-print("Locked ~38 TFLOPS | Unlocked ~60-70 TFLOPS")
+print("Locked ~28-39 TFLOPS | Unlocked ~57-73 TFLOPS (scales with SM clock; pin 1500 MHz for a stable compare)")
 flops=WARPS*ITERS*2*16*8*16
 try:
     while True:

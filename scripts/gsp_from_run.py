@@ -31,6 +31,8 @@ def payload_offset(installer: Path) -> int:
 
 
 def main() -> int:
+    if len(sys.argv) != 3:
+        raise SystemExit(f"usage: {Path(sys.argv[0]).name} <NVIDIA-Linux-x86_64-{VERSION}.run> <outdir>")
     run = Path(sys.argv[1]); out = Path(sys.argv[2]); out.mkdir(parents=True, exist_ok=True)
     want = set(FIRMWARE) | {NOTICE}
     got = {}
@@ -55,5 +57,5 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, ValueError, zstandard.ZstdError) as e:
+    except (OSError, ValueError, tarfile.TarError, zstandard.ZstdError) as e:
         raise SystemExit(f"gsp extract failed: {e}")

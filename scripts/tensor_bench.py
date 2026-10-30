@@ -88,10 +88,12 @@ flops_per_mma = 2 * 16 * 8 * 16
 total = WARPS * ITERS * flops_per_mma
 tflops = total / best / 1e12
 
-print(f"GPU: {name.value.decode()}  cc={cc_major.value}.{cc_minor.value}  SMs={sm.value}  clock={clk.value/1000:.0f}MHz")
+print(f"GPU: {name.value.decode()}  cc={cc_major.value}.{cc_minor.value}  SMs={sm.value}  rated_clock={clk.value/1000:.0f}MHz (static, not live)")
 print(f"warps={WARPS} iters/warp={ITERS} time={best*1000:.1f}ms")
 print(f"FP16 tensor (f32 accumulate): {tflops:.1f} TFLOPS")
 print()
-print("Reference for RTX 3070 Laptop (GA104, 40 SM): ~36 TFLOPS locked, ~60-70 unlocked.")
+print("Reference RTX 3070 Laptop (GA104, 40 SM) @ pinned 1500 MHz: ~28-29 locked, ~57 unlocked.")
+print("  (Full boost ~1860 MHz: ~39 locked / ~73 unlocked.)")
 print("VERDICT:", "UNLOCKED (near full rate)" if tflops > 50 else
                   "LOCKED / reverted (half rate)" if tflops < 45 else "borderline - rerun")
+print("  (valid only at a pinned/known SM clock -- nvidia-smi -lgc 1500,1500 first; a low number at a low clock is NOT 'locked')")

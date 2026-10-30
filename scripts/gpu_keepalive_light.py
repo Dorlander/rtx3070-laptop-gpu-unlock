@@ -2,7 +2,7 @@
 # LIGHT keep-alive: holds the dGPU awake with negligible load so the UEFI-applied
 # unlock is not lost to RTD3 power-down, while leaving the GPU free for real work.
 # A tiny kernel every 100 ms resets the idle timer; every 60 s it prints the FP16
-# tensor rate as a health check (~65-73 = unlocked, ~38 = reset). Ctrl+C / close to stop.
+# tensor rate as a health check (~57-73 = unlocked, ~28-39 = reset; scales with SM clock). Ctrl+C / close to stop.
 import ctypes as C, time
 PTX = b"""
 .version 7.5
@@ -67,14 +67,14 @@ def measure():          # brief full-rate sample for the health check
 nudge()
 tf=measure()
 print(f"Light keep-alive active (SMs={sm.value}). The dGPU stays awake, so the unlock holds.")
-print(f"Start rate: {tf:.1f} TFLOPS  -> {'UNLOCKED' if tf>50 else 'LOCKED (unlock was already reset)'}")
+print(f"Start rate: {tf:.1f} TFLOPS  -> {'UNLOCKED' if tf>50 else 'LOW - if the card idled/throttled, pin 1500 MHz to confirm'}")
 print("Leave this running while you use the GPU. Health check every 60 s. Ctrl+C to stop.")
 last=time.time()
 try:
     while True:
         nudge(); time.sleep(0.1)
         if time.time()-last>=60:
-            tf=measure(); print(f"{time.strftime('%H:%M:%S')}  {tf:5.1f} TFLOPS  {'UNLOCKED' if tf>50 else 'LOCKED'}")
+            tf=measure(); print(f"{time.strftime('%H:%M:%S')}  {tf:5.1f} TFLOPS  {'UNLOCKED' if tf>50 else 'LOW?'}")
             last=time.time()
 except KeyboardInterrupt:
     print("keep-alive stopped")
